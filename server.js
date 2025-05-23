@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs'); // Para criptografar senhas
 const jwt = require('jsonwebtoken'); // Para gerar tokens de autenticação
 const cors = require('cors'); // Para permitir requisições de diferentes origens (seu app React Native)
+const axios = require('axios');
 
 // Para carregar variáveis de ambiente (ex: string de conexão do MongoDB Atlas)
 require('dotenv').config();
@@ -187,6 +188,74 @@ app.post('/api/auth/login', async (req, res) => {
     } catch (error) {
         console.error("Erro no endpoint /api/auth/login:", error);
         res.status(500).json({ message: 'Erro interno do servidor ao tentar fazer login.' });
+    }
+});
+
+const TMDB_API_KEY = process.env.TMDB_API_KEY;
+const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
+
+// Rota para buscar filmes populares
+app.get('/api/tmdb/popular', async (req, res) => {
+    if (!TMDB_API_KEY) {
+        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
+    }
+    try {
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/popular`, {
+            params: {
+                api_key: TMDB_API_KEY,
+                language: 'pt-BR', // Para resultados em português
+                page: 1
+            }
+        });
+        res.json(response.data.results); // Envia a lista de filmes populares
+    } catch (error) {
+        console.error('Erro ao buscar filmes populares do TMDB:', error.response ? error.response.data : error.message);
+        res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filmes populares.' });
+    }
+});
+
+// Rota para buscar filmes em breve (Upcoming)
+app.get('/api/tmdb/upcoming', async (req, res) => {
+    if (!TMDB_API_KEY) {
+        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
+    }
+    try {
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/upcoming`, {
+            params: {
+                api_key: TMDB_API_KEY,
+                language: 'pt-BR',
+                page: 1
+            }
+        });
+        res.json(response.data.results);
+    } catch (error) {
+        console.error('Erro ao buscar filmes em breve do TMDB:', error.response ? error.response.data : error.message);
+        res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filmes em breve.' });
+    }
+});
+
+// Rota para um filme em destaque (ex: o mais recente dos "Now Playing")
+app.get('/api/tmdb/featured', async (req, res) => {
+    if (!TMDB_API_KEY) {
+        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
+    }
+    try {
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/now_playing`, {
+            params: {
+                api_key: TMDB_API_KEY,
+                language: 'pt-BR',
+                page: 1
+            }
+        });
+        // Pega o primeiro filme da lista como destaque, por exemplo
+        if (response.data.results && response.data.results.length > 0) {
+            res.json(response.data.results[0]);
+        } else {
+            res.status(404).json({ message: 'Nenhum filme em destaque encontrado.' });
+        }
+    } catch (error) {
+        console.error('Erro ao buscar filme em destaque do TMDB:', error.response ? error.response.data : error.message);
+        res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filme em destaque.' });
     }
 });
 
