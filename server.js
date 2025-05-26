@@ -1,5 +1,3 @@
-// server.js (ou index.js) - Arquivo principal do seu backend
-
 // 1. Importar dependências
 const express = require('express');
 const mongoose = require('mongoose');
