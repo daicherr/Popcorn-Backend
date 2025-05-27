@@ -1,3 +1,5 @@
+// server.js (ou index.js) - Arquivo principal do seu backend
+
 // 1. Importar dependências
 const express = require('express');
 const mongoose = require('mongoose');
@@ -256,6 +258,49 @@ app.get('/api/tmdb/featured', async (req, res) => {
         res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filme em destaque.' });
     }
 });
+
+
+app.get('/api/tmdb/movie/:movieId', async (req, res) => {
+    const { movieId } = req.params; // Pega o movieId da URL
+
+    if (!TMDB_API_KEY) {
+        console.error("Chave da API do TMDB não configurada no servidor ao buscar detalhes do filme.");
+        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
+    }
+
+    if (!movieId) {
+        return res.status(400).json({ message: 'O ID do filme é obrigatório.' });
+    }
+
+    try {
+        // Faz a requisição para o endpoint de detalhes do filme no TMDB
+        // Adicionamos append_to_response=credits para buscar informações do elenco (cast)
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/${movieId}`, {
+            params: {
+                api_key: TMDB_API_KEY,
+                language: 'pt-BR',
+                append_to_response: 'credits,videos,images,release_dates,watch/providers' // Adiciona mais dados
+            }
+        });
+        console.log(`Detalhes do filme ${movieId} buscados com sucesso do TMDB.`);
+        res.json(response.data); // Envia todos os dados do filme
+
+    } catch (error) {
+        console.error(`Erro ao buscar detalhes do filme ${movieId} do TMDB:`, error.response ? error.response.data : error.message);
+        
+        if (error.response) {
+            // Se o TMDB retornou um erro específico (ex: 404 Not Found)
+            res.status(error.response.status).json({ 
+                message: `Erro ao buscar detalhes do filme no TMDB: ${error.response.data.status_message || error.message}`,
+                tmdb_status_code: error.response.data.status_code 
+            });
+        } else {
+            // Erro de rede ou outro erro antes de receber resposta do TMDB
+            res.status(500).json({ message: `Erro interno do servidor ao buscar detalhes do filme: ${error.message}` });
+        }
+    }
+});
+
 
 
 // 7. Iniciar o Servidor
