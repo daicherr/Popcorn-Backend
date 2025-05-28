@@ -27,6 +27,7 @@ mongoose.connect(MONGO_URI)
     process.exit(1);
 });
 
+// --- SCHEMAS ---
 const userSchema = new mongoose.Schema({
     email: {
         type: String,
@@ -70,10 +71,11 @@ const reviewSchema = new mongoose.Schema({
         required: true,
         index: true
     },
-    userId: {
+    userId: { // Adicionado index: true para performance em buscas por userId
         type: mongoose.Schema.Types.ObjectId,
         required: true,
-        ref: 'User'
+        ref: 'User',
+        index: true
     },
     userEmail: {
         type: String,
@@ -118,21 +120,10 @@ reviewSchema.index({ movieId: 1, userId: 1 }, { unique: true });
 const Review = mongoose.model('Review', reviewSchema);
 
 const movieItemSchema = new mongoose.Schema({
-    tmdbId: {
-        type: String,
-        required: true
-    },
-    title: {
-        type: String,
-        required: true
-    },
-    posterPath: {
-        type: String
-    },
-    addedAt: {
-        type: Date,
-        default: Date.now
-    }
+    tmdbId: { type: String, required: true },
+    title: { type: String, required: true },
+    posterPath: { type: String },
+    addedAt: { type: Date, default: Date.now }
 }, { _id: false });
 
 const userListSchema = new mongoose.Schema({
@@ -149,23 +140,14 @@ const userListSchema = new mongoose.Schema({
         index: true
     },
     movies: [movieItemSchema],
-    isPublic: {
-        type: Boolean,
-        default: false
-    },
+    isPublic: { type: Boolean, default: false },
     description: {
         type: String,
         trim: true,
         maxlength: [500, "A descrição não pode exceder 500 caracteres."]
     },
-    createdAt: {
-        type: Date,
-        default: Date.now
-    },
-    updatedAt: {
-        type: Date,
-        default: Date.now
-    }
+    createdAt: { type: Date, default: Date.now },
+    updatedAt: { type: Date, default: Date.now }
 });
 
 userListSchema.pre('save', function(next) {
@@ -173,10 +155,11 @@ userListSchema.pre('save', function(next) {
     next();
 });
 
-userListSchema.index({ userId: 1, name: 1 }, { unique: true });
+userListSchema.index({ userId: 1, name: 1 }, { unique: true }); // Garante que um usuário não tenha listas com o mesmo nome
 
 const UserList = mongoose.model('UserList', userListSchema);
 
+// --- MIDDLEWARE DE PROTEÇÃO ---
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -193,12 +176,8 @@ const protect = async (req, res, next) => {
             }
             next();
         } catch (error) {
-            if (error.name === 'JsonWebTokenError') {
-                return res.status(401).json({ message: 'Token inválido.' });
-            }
-            if (error.name === 'TokenExpiredError') {
-                return res.status(401).json({ message: 'Token expirado.' });
-            }
+            if (error.name === 'JsonWebTokenError') return res.status(401).json({ message: 'Token inválido.' });
+            if (error.name === 'TokenExpiredError') return res.status(401).json({ message: 'Token expirado.' });
             return res.status(401).json({ message: 'Não autorizado, falha no token.' });
         }
     }
@@ -207,26 +186,19 @@ const protect = async (req, res, next) => {
     }
 };
 
+// --- ROTAS DE AUTENTICAÇÃO ---
 app.post('/api/auth/register', async (req, res) => {
     const { email, password } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ message: 'Por favor, forneça email e senha.' });
-    }
-    if (password.length < 6) {
-        return res.status(400).json({ message: 'A senha deve ter pelo menos 6 caracteres.' });
-    }
+    if (!email || !password) return res.status(400).json({ message: 'Por favor, forneça email e senha.' });
+    if (password.length < 6) return res.status(400).json({ message: 'A senha deve ter pelo menos 6 caracteres.' });
     try {
         const existingUser = await User.findOne({ email: email.toLowerCase() });
-        if (existingUser) {
-            return res.status(400).json({ message: 'Este email já está em uso.' });
-        }
+        if (existingUser) return res.status(400).json({ message: 'Este email já está em uso.' });
         const newUser = new User({ email, password });
         await newUser.save();
         res.status(201).json({ message: 'Usuário cadastrado com sucesso!', userId: newUser._id });
     } catch (error) {
-        if (error.code === 11000) {
-             return res.status(400).json({ message: 'Este email já está em uso (erro de duplicidade).' });
-        }
+        if (error.code === 11000) return res.status(400).json({ message: 'Este email já está em uso (erro de duplicidade).' });
         if (error.name === 'ValidationError') {
             const messages = Object.values(error.errors).map(val => val.message);
             return res.status(400).json({ message: messages.join(', ') });
@@ -237,24 +209,16 @@ app.post('/api/auth/register', async (req, res) => {
 
 app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
-    if (!email || !password) {
-        return res.status(400).json({ message: 'Por favor, forneça email e senha.' });
-    }
+    if (!email || !password) return res.status(400).json({ message: 'Por favor, forneça email e senha.' });
     try {
         const user = await User.findOne({ email: email.toLowerCase() });
-        if (!user) {
-            return res.status(401).json({ message: 'Email ou senha inválidos.' });
-        }
+        if (!user) return res.status(401).json({ message: 'Email ou senha inválidos.' });
         const isMatch = await user.comparePassword(password);
-        if (!isMatch) {
-            return res.status(401).json({ message: 'Email ou senha inválidos.' });
-        }
+        if (!isMatch) return res.status(401).json({ message: 'Email ou senha inválidos.' });
         const JWT_SECRET = process.env.JWT_SECRET;
-        if (!JWT_SECRET) {
-            return res.status(500).json({ message: "Erro de configuração do servidor (segredo JWT)." });
-        }
+        if (!JWT_SECRET) return res.status(500).json({ message: "Erro de configuração do servidor (segredo JWT)." });
         const tokenPayload = { userId: user._id, email: user.email };
-        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '1h' });
+        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '1h' });
         res.status(200).json({
             message: 'Login bem-sucedido!',
             token: token,
@@ -265,138 +229,73 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
+// --- ROTAS TMDB ---
 const TMDB_API_KEY = process.env.TMDB_API_KEY;
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3';
 
 app.get('/api/tmdb/popular', async (req, res) => {
-    if (!TMDB_API_KEY) {
-        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
-    }
+    if (!TMDB_API_KEY) return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
     try {
-        const response = await axios.get(`${TMDB_BASE_URL}/movie/popular`, {
-            params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 }
-        });
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/popular`, { params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 } });
         res.json(response.data.results);
-    } catch (error) {
-        res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filmes populares.' });
-    }
+    } catch (error) { res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filmes populares.' }); }
 });
 
 app.get('/api/tmdb/upcoming', async (req, res) => {
-    if (!TMDB_API_KEY) {
-        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
-    }
+    if (!TMDB_API_KEY) return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
     try {
-        const response = await axios.get(`${TMDB_BASE_URL}/movie/upcoming`, {
-            params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 }
-        });
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/upcoming`, { params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 } });
         res.json(response.data.results);
-    } catch (error) {
-        res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filmes em breve.' });
-    }
+    } catch (error) { res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filmes em breve.' }); }
 });
 
 app.get('/api/tmdb/featured', async (req, res) => {
-    if (!TMDB_API_KEY) {
-        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
-    }
+    if (!TMDB_API_KEY) return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
     try {
-        const response = await axios.get(`${TMDB_BASE_URL}/movie/now_playing`, {
-            params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 }
-        });
-        if (response.data.results && response.data.results.length > 0) {
-            res.json(response.data.results[0]);
-        } else {
-            res.status(404).json({ message: 'Nenhum filme em destaque encontrado.' });
-        }
-    } catch (error) {
-        res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filme em destaque.' });
-    }
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/now_playing`, { params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 } });
+        if (response.data.results && response.data.results.length > 0) res.json(response.data.results[0]);
+        else res.status(404).json({ message: 'Nenhum filme em destaque encontrado.' });
+    } catch (error) { res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filme em destaque.' }); }
 });
 
 app.get('/api/tmdb/movie/:movieId', async (req, res) => {
     const { movieId } = req.params;
-    if (!TMDB_API_KEY) {
-        return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
-    }
-    if (!movieId) {
-        return res.status(400).json({ message: 'O ID do filme é obrigatório.' });
-    }
+    if (!TMDB_API_KEY) return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
+    if (!movieId) return res.status(400).json({ message: 'O ID do filme é obrigatório.' });
     try {
-        const response = await axios.get(`${TMDB_BASE_URL}/movie/${movieId}`, {
-            params: {
-                api_key: TMDB_API_KEY,
-                language: 'pt-BR',
-                append_to_response: 'credits,videos,images,release_dates,watch/providers'
-            }
-        });
+        const response = await axios.get(`${TMDB_BASE_URL}/movie/${movieId}`, { params: { api_key: TMDB_API_KEY, language: 'pt-BR', append_to_response: 'credits,videos,images,release_dates,watch/providers' } });
         res.json(response.data);
     } catch (error) {
-        if (error.response) {
-            res.status(error.response.status).json({
-                message: `Erro ao buscar detalhes do filme no TMDB: ${error.response.data.status_message || error.message}`,
-                tmdb_status_code: error.response.data.status_code
-            });
-        } else {
-            res.status(500).json({ message: `Erro interno do servidor ao buscar detalhes do filme: ${error.message}` });
-        }
+        if (error.response) res.status(error.response.status).json({ message: `Erro ao buscar detalhes do filme no TMDB: ${error.response.data.status_message || error.message}`, tmdb_status_code: error.response.data.status_code });
+        else res.status(500).json({ message: `Erro interno do servidor ao buscar detalhes do filme: ${error.message}` });
     }
 });
 
+
+// --- ROTAS DE REVIEWS ---
 app.post('/api/reviews/:movieId', protect, async (req, res) => {
     const { movieId } = req.params;
     const { rating, reviewText, tags, isSpoiler } = req.body;
-    const userId = req.user._id;
-    const userEmail = req.user.email;
+    const userId = req.user._id; const userEmail = req.user.email;
 
-    if (rating == null || typeof rating !== 'number') {
-        return res.status(400).json({ message: "A nota (rating) é obrigatória e deve ser um número." });
-    }
-    if (rating < 0.5 || rating > 5) {
-        return res.status(400).json({ message: "A nota deve ser entre 0.5 e 5." });
-    }
-    if (reviewText && typeof reviewText !== 'string') {
-        return res.status(400).json({ message: "O texto da crítica, se fornecido, deve ser uma string."});
-    }
-    if (tags && !Array.isArray(tags)) {
-        return res.status(400).json({ message: "Tags devem ser um array de strings."});
-    }
-    if (isSpoiler != null && typeof isSpoiler !== 'boolean') {
-        return res.status(400).json({ message: "isSpoiler deve ser um valor booleano."});
-    }
+    if (rating == null || typeof rating !== 'number' || rating < 0.5 || rating > 5) return res.status(400).json({ message: "A nota (rating) é obrigatória e deve ser um número entre 0.5 e 5." });
+    if (reviewText && typeof reviewText !== 'string') return res.status(400).json({ message: "O texto da crítica, se fornecido, deve ser uma string."});
+    if (tags && !Array.isArray(tags)) return res.status(400).json({ message: "Tags devem ser um array de strings."});
+    if (isSpoiler != null && typeof isSpoiler !== 'boolean') return res.status(400).json({ message: "isSpoiler deve ser um valor booleano."});
 
     try {
-        const existingReview = await Review.findOne({ movieId, userId });
-        const reviewData = {
-            rating,
-            reviewText: reviewText != null ? reviewText : (existingReview ? existingReview.reviewText : ''),
-            tags: tags || (existingReview ? existingReview.tags : []),
-            isSpoiler: isSpoiler != null ? isSpoiler : (existingReview ? existingReview.isSpoiler : false),
-            updatedAt: Date.now()
-        };
-
-        if (existingReview) {
-            existingReview.set(reviewData);
-            const updatedReview = await existingReview.save();
-            return res.status(200).json({ message: "Crítica atualizada com sucesso!", review: updatedReview });
-        } else {
-            const newReview = new Review({
-                movieId,
-                userId,
-                userEmail,
-                ...reviewData
-            });
-            const savedReview = await newReview.save();
-            return res.status(201).json({ message: "Crítica adicionada com sucesso!", review: savedReview });
-        }
+        const reviewData = { rating, reviewText: reviewText || '', tags: tags || [], isSpoiler: isSpoiler || false, updatedAt: Date.now() };
+        const existingReview = await Review.findOneAndUpdate(
+            { movieId, userId },
+            { ...reviewData, userEmail }, // Garante que userEmail seja definido/atualizado
+            { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true } // upsert cria se não existir
+        );
+        res.status(existingReview.createdAt.getTime() === existingReview.updatedAt.getTime() ? 201 : 200).json({
+            message: existingReview.createdAt.getTime() === existingReview.updatedAt.getTime() ? "Crítica adicionada com sucesso!" : "Crítica atualizada com sucesso!",
+            review: existingReview
+        });
     } catch (error) {
-        if (error.name === 'ValidationError') {
-            const messages = Object.values(error.errors).map(val => val.message);
-            return res.status(400).json({ message: messages.join(', ') });
-        }
-        if (error.code === 11000) {
-            return res.status(409).json({ message: 'Você já enviou uma crítica para este filme.' });
-        }
+        if (error.name === 'ValidationError') { const messages = Object.values(error.errors).map(val => val.message); return res.status(400).json({ message: messages.join(', ') }); }
         res.status(500).json({ message: "Erro interno do servidor ao salvar a crítica." });
     }
 });
@@ -406,55 +305,47 @@ app.get('/api/reviews/:movieId', async (req, res) => {
     try {
         const reviews = await Review.find({ movieId }).sort({ createdAt: -1 });
         res.status(200).json(reviews);
-    } catch (error) {
-        res.status(500).json({ message: "Erro interno do servidor ao buscar as críticas." });
-    }
+    } catch (error) { res.status(500).json({ message: "Erro interno do servidor ao buscar as críticas." }); }
 });
 
 app.get('/api/movies/:movieId/stats', async (req, res) => {
     const { movieId } = req.params;
     try {
         const reviews = await Review.find({ movieId });
-        if (reviews.length === 0) {
-            return res.status(200).json({ averageRating: 0, reviewCount: 0 });
-        }
+        if (reviews.length === 0) return res.status(200).json({ averageRating: 0, reviewCount: 0 });
         const totalRating = reviews.reduce((acc, review) => acc + review.rating, 0);
         const averageRating = totalRating / reviews.length;
-        res.status(200).json({
-            averageRating: parseFloat(averageRating.toFixed(1)),
-            reviewCount: reviews.length
-        });
+        res.status(200).json({ averageRating: parseFloat(averageRating.toFixed(1)), reviewCount: reviews.length });
+    } catch (error) { res.status(500).json({ message: "Erro ao calcular a nota média." }); }
+});
+
+// Endpoint para contar avaliações de um usuário específico
+app.get('/api/reviews/user/:userId/count', protect, async (req, res) => {
+    const { userId } = req.params;
+    if (req.user._id.toString() !== userId) {
+        return res.status(403).json({ message: "Não autorizado a acessar estatísticas deste usuário." });
+    }
+    try {
+        const count = await Review.countDocuments({ userId: userId });
+        res.status(200).json({ count });
     } catch (error) {
-        res.status(500).json({ message: "Erro ao calcular a nota média." });
+        console.error('Erro ao contar avaliações do usuário:', error);
+        res.status(500).json({ message: "Erro interno do servidor ao contar as avaliações." });
     }
 });
 
+
+// --- ROTAS DE LISTAS DE USUÁRIOS (UserList) ---
 app.post('/api/lists', protect, async (req, res) => {
-    const { name, description, isPublic } = req.body;
-    const userId = req.user._id;
-
-    if (!name || typeof name !== 'string' || name.trim() === '') {
-        return res.status(400).json({ message: "O nome da lista é obrigatório." });
-    }
-
+    const { name, description, isPublic } = req.body; const userId = req.user._id;
+    if (!name || typeof name !== 'string' || name.trim() === '') return res.status(400).json({ message: "O nome da lista é obrigatório." });
     try {
-        const newList = new UserList({
-            name: name.trim(),
-            userId,
-            description: description || '',
-            isPublic: isPublic || false,
-            movies: [] 
-        });
+        const newList = new UserList({ name: name.trim(), userId, description: description || '', isPublic: isPublic || false, movies: [] });
         const savedList = await newList.save();
         res.status(201).json(savedList);
     } catch (error) {
-        if (error.code === 11000) {
-            return res.status(400).json({ message: `Você já possui uma lista com o nome "${name.trim()}".` });
-        }
-        if (error.name === 'ValidationError') {
-            const messages = Object.values(error.errors).map(val => val.message);
-            return res.status(400).json({ message: messages.join(', ') });
-        }
+        if (error.code === 11000) { return res.status(400).json({ message: `Você já possui uma lista com o nome "${name.trim()}".` });}
+        if (error.name === 'ValidationError') { const messages = Object.values(error.errors).map(val => val.message); return res.status(400).json({ message: messages.join(', ') });}
         res.status(500).json({ message: "Erro ao criar a lista." });
     }
 });
@@ -463,124 +354,99 @@ app.get('/api/lists', protect, async (req, res) => {
     try {
         const lists = await UserList.find({ userId: req.user._id }).sort({ updatedAt: -1 });
         res.status(200).json(lists);
-    } catch (error) {
-        res.status(500).json({ message: "Erro ao buscar as listas." });
-    }
+    } catch (error) { res.status(500).json({ message: "Erro ao buscar as listas." }); }
 });
 
 app.get('/api/lists/:listId', protect, async (req, res) => {
     try {
         const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
-        if (!list) {
-            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
-        }
+        if (!list) return res.status(404).json({ message: 'Lista não encontrada ou não pertence a este usuário.' });
         res.status(200).json(list);
     } catch (error) {
-        if (error.kind === 'ObjectId') {
-            return res.status(400).json({ message: "ID da lista inválido." });
-        }
-        res.status(500).json({ message: "Erro ao buscar a lista." });
+        if (error.kind === 'ObjectId') return res.status(400).json({ message: 'ID da lista inválido.' });
+        res.status(500).json({ message: 'Erro ao buscar detalhes da lista.' });
     }
 });
 
 app.put('/api/lists/:listId', protect, async (req, res) => {
     const { name, description, isPublic } = req.body;
-    if (name && (typeof name !== 'string' || name.trim() === '')) {
-        return res.status(400).json({ message: "O nome da lista não pode ser vazio se fornecido."});
-    }
-    try {
-        const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
-        if (!list) {
-            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
-        }
+    const { listId } = req.params;
+    const userId = req.user._id;
 
-        if (name) list.name = name.trim();
-        if (description != null) list.description = description;
-        if (isPublic != null) list.isPublic = isPublic;
+    if (!name || typeof name !== 'string' || name.trim() === '') return res.status(400).json({ message: "O nome da lista é obrigatório." });
+    try {
+        const list = await UserList.findOne({ _id: listId, userId });
+        if (!list) return res.status(404).json({ message: 'Lista não encontrada ou não pertence a este usuário.' });
+
+        if (name.trim().toLowerCase() !== list.name.toLowerCase()) {
+            const existingListWithNewName = await UserList.findOne({ userId, name: name.trim(), _id: { $ne: listId } });
+            if (existingListWithNewName) {
+                return res.status(400).json({ message: `Você já possui outra lista com o nome "${name.trim()}".` });
+            }
+        }
         
+        list.name = name.trim();
+        list.description = description != null ? description.trim() : ''; // Garante que description seja string
+        list.isPublic = isPublic != null ? isPublic : false; // Garante que isPublic seja boolean
+        list.updatedAt = Date.now();
         const updatedList = await list.save();
         res.status(200).json(updatedList);
     } catch (error) {
-        if (error.code === 11000) {
-             return res.status(400).json({ message: `Você já possui uma lista com o nome "${name.trim()}".` });
-        }
-        if (error.name === 'ValidationError') {
-            const messages = Object.values(error.errors).map(val => val.message);
-            return res.status(400).json({ message: messages.join(', ') });
-        }
-        res.status(500).json({ message: "Erro ao atualizar a lista." });
+        if (error.kind === 'ObjectId') return res.status(400).json({ message: 'ID da lista inválido.' });
+        if (error.name === 'ValidationError') { const messages = Object.values(error.errors).map(val => val.message); return res.status(400).json({ message: messages.join(', ') });}
+        res.status(500).json({ message: 'Erro ao atualizar a lista.' });
     }
 });
 
 app.delete('/api/lists/:listId', protect, async (req, res) => {
     try {
         const list = await UserList.findOneAndDelete({ _id: req.params.listId, userId: req.user._id });
-        if (!list) {
-            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
-        }
-        res.status(200).json({ message: "Lista deletada com sucesso." });
+        if (!list) return res.status(404).json({ message: 'Lista não encontrada ou não pertence a este usuário.' });
+        res.status(200).json({ message: 'Lista deletada com sucesso.' });
     } catch (error) {
-        if (error.kind === 'ObjectId') {
-            return res.status(400).json({ message: "ID da lista inválido." });
-        }
-        res.status(500).json({ message: "Erro ao deletar a lista." });
+        if (error.kind === 'ObjectId') return res.status(400).json({ message: 'ID da lista inválido.' });
+        res.status(500).json({ message: 'Erro ao deletar a lista.' });
     }
 });
 
 app.post('/api/lists/:listId/movies', protect, async (req, res) => {
     const { tmdbId, title, posterPath } = req.body;
-
-    if (!tmdbId || !title) {
-        return res.status(400).json({ message: "tmdbId e title do filme são obrigatórios." });
-    }
-
+    if (!tmdbId || !title) return res.status(400).json({ message: 'ID do filme (tmdbId) e título são obrigatórios.' });
     try {
         const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
-        if (!list) {
-            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
+        if (!list) return res.status(404).json({ message: 'Lista não encontrada.' });
+        if (list.movies.find(movie => movie.tmdbId === tmdbId.toString())) {
+            return res.status(400).json({ message: 'Este filme já está na lista.' });
         }
-
-        const movieExists = list.movies.find(movie => movie.tmdbId.toString() === tmdbId.toString());
-        if (movieExists) {
-            return res.status(400).json({ message: "Este filme já está na lista." });
-        }
-
-        list.movies.push({ tmdbId, title, posterPath: posterPath || null });
-        const updatedList = await list.save();
-        res.status(200).json(updatedList);
+        list.movies.push({ tmdbId: tmdbId.toString(), title, posterPath: posterPath || '' }); // Garante posterPath
+        list.updatedAt = Date.now();
+        await list.save();
+        res.status(200).json(list);
     } catch (error) {
-        if (error.kind === 'ObjectId') {
-            return res.status(400).json({ message: "ID da lista inválido." });
-        }
-        res.status(500).json({ message: "Erro ao adicionar filme à lista." });
+        if (error.kind === 'ObjectId') return res.status(400).json({ message: 'ID da lista inválido.' });
+        res.status(500).json({ message: 'Erro ao adicionar filme à lista.' });
     }
 });
 
-app.delete('/api/lists/:listId/movies/:tmdbId', protect, async (req, res) => {
-    const { listId, tmdbId } = req.params;
+app.delete('/api/lists/:listId/movies/:tmdbMovieId', protect, async (req, res) => {
     try {
-        const list = await UserList.findOne({ _id: listId, userId: req.user._id });
-        if (!list) {
-            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
-        }
-
-        const movieIndex = list.movies.findIndex(movie => movie.tmdbId.toString() === tmdbId.toString());
-        if (movieIndex === -1) {
-            return res.status(404).json({ message: "Filme não encontrado nesta lista." });
-        }
-
+        const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
+        if (!list) return res.status(404).json({ message: 'Lista não encontrada.' });
+        const movieIndex = list.movies.findIndex(movie => movie.tmdbId === req.params.tmdbMovieId.toString());
+        if (movieIndex === -1) return res.status(404).json({ message: 'Filme não encontrado nesta lista.' });
         list.movies.splice(movieIndex, 1);
-        const updatedList = await list.save();
-        res.status(200).json(updatedList);
+        list.updatedAt = Date.now();
+        await list.save();
+        res.status(200).json(list);
     } catch (error) {
-         if (error.kind === 'ObjectId') {
-            return res.status(400).json({ message: "ID da lista ou do filme inválido." });
-        }
-        res.status(500).json({ message: "Erro ao remover filme da lista." });
+        if (error.kind === 'ObjectId') return res.status(400).json({ message: 'ID da lista ou do filme inválido.' });
+        res.status(500).json({ message: 'Erro ao remover filme da lista.' });
     }
 });
 
+
+// --- INICIALIZAÇÃO DO SERVIDOR ---
 app.listen(PORT, () => {
     console.log(`Servidor backend rodando na porta ${PORT}`);
-    console.log(`Acesse em http://localhost:${PORT}`);
+    console.log(`Acesse em http://localhost:${PORT}.`);
 });
