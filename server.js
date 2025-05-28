@@ -27,6 +27,9 @@ mongoose.connect(MONGO_URI)
     process.exit(1);
 });
 
+// Nome padrão para a Watchlist do usuário
+const DEFAULT_WATCHLIST_NAME = "Quero Ver";
+
 // --- SCHEMAS ---
 const userSchema = new mongoose.Schema({
     email: {
@@ -71,11 +74,11 @@ const reviewSchema = new mongoose.Schema({
         required: true,
         index: true
     },
-    userId: { // Adicionado index: true para performance em buscas por userId
+    userId: {
         type: mongoose.Schema.Types.ObjectId,
         required: true,
         ref: 'User',
-        index: true
+        index: true // Importante para buscar/contar reviews por usuário
     },
     userEmail: {
         type: String,
@@ -115,16 +118,16 @@ reviewSchema.pre('save', function(next) {
     next();
 });
 
-reviewSchema.index({ movieId: 1, userId: 1 }, { unique: true });
+reviewSchema.index({ movieId: 1, userId: 1 }, { unique: true }); // Garante que um usuário só pode avaliar um filme uma vez
 
 const Review = mongoose.model('Review', reviewSchema);
 
 const movieItemSchema = new mongoose.Schema({
     tmdbId: { type: String, required: true },
     title: { type: String, required: true },
-    posterPath: { type: String },
+    posterPath: { type: String }, // Opcional, mas recomendado
     addedAt: { type: Date, default: Date.now }
-}, { _id: false });
+}, { _id: false }); // _id: false para subdocumentos se não precisar de IDs individuais para eles
 
 const userListSchema = new mongoose.Schema({
     name: {
@@ -155,11 +158,12 @@ userListSchema.pre('save', function(next) {
     next();
 });
 
-userListSchema.index({ userId: 1, name: 1 }, { unique: true }); // Garante que um usuário não tenha listas com o mesmo nome
+// Garante que um usuário não tenha múltiplas listas com o mesmo nome.
+userListSchema.index({ userId: 1, name: 1 }, { unique: true });
 
 const UserList = mongoose.model('UserList', userListSchema);
 
-// --- MIDDLEWARE DE PROTEÇÃO ---
+// --- MIDDLEWARE DE PROTEÇÃO (protect) ---
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -167,6 +171,7 @@ const protect = async (req, res, next) => {
             token = req.headers.authorization.split(' ')[1];
             const JWT_SECRET = process.env.JWT_SECRET;
             if (!JWT_SECRET) {
+                console.error("JWT_SECRET não definido no .env");
                 throw new Error('Configuração de autenticação inválida no servidor.');
             }
             const decoded = jwt.verify(token, JWT_SECRET);
@@ -178,6 +183,7 @@ const protect = async (req, res, next) => {
         } catch (error) {
             if (error.name === 'JsonWebTokenError') return res.status(401).json({ message: 'Token inválido.' });
             if (error.name === 'TokenExpiredError') return res.status(401).json({ message: 'Token expirado.' });
+            console.error("Erro na autenticação do token:", error.message);
             return res.status(401).json({ message: 'Não autorizado, falha no token.' });
         }
     }
@@ -185,6 +191,23 @@ const protect = async (req, res, next) => {
         res.status(401).json({ message: 'Não autorizado, nenhum token fornecido.' });
     }
 };
+
+// --- FUNÇÃO AUXILIAR PARA WATCHLIST ---
+async function getOrCreateWatchlist(userId) {
+    let watchlist = await UserList.findOne({ userId, name: DEFAULT_WATCHLIST_NAME });
+    if (!watchlist) {
+        watchlist = new UserList({
+            name: DEFAULT_WATCHLIST_NAME,
+            userId,
+            description: "Filmes que desejo assistir.",
+            isPublic: false, // Watchlist é privada por padrão
+            movies: []
+        });
+        await watchlist.save();
+    }
+    return watchlist;
+}
+
 
 // --- ROTAS DE AUTENTICAÇÃO ---
 app.post('/api/auth/register', async (req, res) => {
@@ -203,6 +226,7 @@ app.post('/api/auth/register', async (req, res) => {
             const messages = Object.values(error.errors).map(val => val.message);
             return res.status(400).json({ message: messages.join(', ') });
         }
+        console.error("Erro no registro:", error);
         res.status(500).json({ message: 'Erro interno do servidor ao tentar cadastrar o usuário.' });
     }
 });
@@ -218,13 +242,14 @@ app.post('/api/auth/login', async (req, res) => {
         const JWT_SECRET = process.env.JWT_SECRET;
         if (!JWT_SECRET) return res.status(500).json({ message: "Erro de configuração do servidor (segredo JWT)." });
         const tokenPayload = { userId: user._id, email: user.email };
-        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '1h' });
+        const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }); // Aumentei a expiração para 7 dias
         res.status(200).json({
             message: 'Login bem-sucedido!',
             token: token,
             user: { id: user._id, email: user.email }
         });
     } catch (error) {
+        console.error("Erro no login:", error);
         res.status(500).json({ message: 'Erro interno do servidor ao tentar fazer login.' });
     }
 });
@@ -253,7 +278,7 @@ app.get('/api/tmdb/featured', async (req, res) => {
     if (!TMDB_API_KEY) return res.status(500).json({ message: 'Chave da API do TMDB não configurada no servidor.' });
     try {
         const response = await axios.get(`${TMDB_BASE_URL}/movie/now_playing`, { params: { api_key: TMDB_API_KEY, language: 'pt-BR', page: 1 } });
-        if (response.data.results && response.data.results.length > 0) res.json(response.data.results[0]);
+        if (response.data.results && response.data.results.length > 0) res.json(response.data.results[Math.floor(Math.random() * Math.min(response.data.results.length, 10))]); // Pega um aleatório dos 10 primeiros
         else res.status(404).json({ message: 'Nenhum filme em destaque encontrado.' });
     } catch (error) { res.status(error.response ? error.response.status : 500).json({ message: 'Erro ao buscar filme em destaque.' }); }
 });
@@ -279,23 +304,25 @@ app.post('/api/reviews/:movieId', protect, async (req, res) => {
     const userId = req.user._id; const userEmail = req.user.email;
 
     if (rating == null || typeof rating !== 'number' || rating < 0.5 || rating > 5) return res.status(400).json({ message: "A nota (rating) é obrigatória e deve ser um número entre 0.5 e 5." });
-    if (reviewText && typeof reviewText !== 'string') return res.status(400).json({ message: "O texto da crítica, se fornecido, deve ser uma string."});
-    if (tags && !Array.isArray(tags)) return res.status(400).json({ message: "Tags devem ser um array de strings."});
-    if (isSpoiler != null && typeof isSpoiler !== 'boolean') return res.status(400).json({ message: "isSpoiler deve ser um valor booleano."});
+    // Adicione outras validações se necessário (ex: reviewText não ser apenas espaços)
 
     try {
         const reviewData = { rating, reviewText: reviewText || '', tags: tags || [], isSpoiler: isSpoiler || false, updatedAt: Date.now() };
-        const existingReview = await Review.findOneAndUpdate(
-            { movieId, userId },
-            { ...reviewData, userEmail }, // Garante que userEmail seja definido/atualizado
-            { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true } // upsert cria se não existir
+        // Usar findOneAndUpdate com upsert: true para criar se não existir, ou atualizar se existir.
+        const updatedOrNewReview = await Review.findOneAndUpdate(
+            { movieId, userId }, // Critério de busca
+            { ...reviewData, userEmail }, // Dados para atualizar ou inserir (garante que userEmail esteja presente)
+            { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true } // Opções
         );
-        res.status(existingReview.createdAt.getTime() === existingReview.updatedAt.getTime() ? 201 : 200).json({
-            message: existingReview.createdAt.getTime() === existingReview.updatedAt.getTime() ? "Crítica adicionada com sucesso!" : "Crítica atualizada com sucesso!",
-            review: existingReview
-        });
+        // Verifica se o documento foi criado ou atualizado para enviar o status code apropriado
+        const statusCode = updatedOrNewReview.createdAt.getTime() === updatedOrNewReview.updatedAt.getTime() && mongoose.Types.ObjectId(updatedOrNewReview._id).getTimestamp().getTime() === updatedOrNewReview.updatedAt.getTime() ? 201 : 200;
+        const message = statusCode === 201 ? "Crítica adicionada com sucesso!" : "Crítica atualizada com sucesso!";
+        
+        res.status(statusCode).json({ message, review: updatedOrNewReview });
+
     } catch (error) {
         if (error.name === 'ValidationError') { const messages = Object.values(error.errors).map(val => val.message); return res.status(400).json({ message: messages.join(', ') }); }
+        console.error("Erro ao salvar review:", error);
         res.status(500).json({ message: "Erro interno do servidor ao salvar a crítica." });
     }
 });
@@ -303,7 +330,7 @@ app.post('/api/reviews/:movieId', protect, async (req, res) => {
 app.get('/api/reviews/:movieId', async (req, res) => {
     const { movieId } = req.params;
     try {
-        const reviews = await Review.find({ movieId }).sort({ createdAt: -1 });
+        const reviews = await Review.find({ movieId }).sort({ createdAt: -1 }).populate('userId', 'email'); // Adicionado populate para exemplo, remova se não quiser o email do user
         res.status(200).json(reviews);
     } catch (error) { res.status(500).json({ message: "Erro interno do servidor ao buscar as críticas." }); }
 });
@@ -319,7 +346,6 @@ app.get('/api/movies/:movieId/stats', async (req, res) => {
     } catch (error) { res.status(500).json({ message: "Erro ao calcular a nota média." }); }
 });
 
-// Endpoint para contar avaliações de um usuário específico
 app.get('/api/reviews/user/:userId/count', protect, async (req, res) => {
     const { userId } = req.params;
     if (req.user._id.toString() !== userId) {
@@ -350,14 +376,14 @@ app.post('/api/lists', protect, async (req, res) => {
     }
 });
 
-app.get('/api/lists', protect, async (req, res) => {
+app.get('/api/lists', protect, async (req, res) => { // Busca todas as listas do usuário logado
     try {
         const lists = await UserList.find({ userId: req.user._id }).sort({ updatedAt: -1 });
         res.status(200).json(lists);
     } catch (error) { res.status(500).json({ message: "Erro ao buscar as listas." }); }
 });
 
-app.get('/api/lists/:listId', protect, async (req, res) => {
+app.get('/api/lists/:listId', protect, async (req, res) => { // Busca uma lista específica pelo ID
     try {
         const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
         if (!list) return res.status(404).json({ message: 'Lista não encontrada ou não pertence a este usuário.' });
@@ -368,7 +394,7 @@ app.get('/api/lists/:listId', protect, async (req, res) => {
     }
 });
 
-app.put('/api/lists/:listId', protect, async (req, res) => {
+app.put('/api/lists/:listId', protect, async (req, res) => { // Atualiza uma lista
     const { name, description, isPublic } = req.body;
     const { listId } = req.params;
     const userId = req.user._id;
@@ -378,16 +404,16 @@ app.put('/api/lists/:listId', protect, async (req, res) => {
         const list = await UserList.findOne({ _id: listId, userId });
         if (!list) return res.status(404).json({ message: 'Lista não encontrada ou não pertence a este usuário.' });
 
-        if (name.trim().toLowerCase() !== list.name.toLowerCase()) {
-            const existingListWithNewName = await UserList.findOne({ userId, name: name.trim(), _id: { $ne: listId } });
+        if (name.trim().toLowerCase() !== list.name.toLowerCase()) { // Verifica se o nome foi alterado
+            const existingListWithNewName = await UserList.findOne({ userId, name: name.trim(), _id: { $ne: listId } }); // Exclui a lista atual da verificação
             if (existingListWithNewName) {
                 return res.status(400).json({ message: `Você já possui outra lista com o nome "${name.trim()}".` });
             }
         }
         
         list.name = name.trim();
-        list.description = description != null ? description.trim() : ''; // Garante que description seja string
-        list.isPublic = isPublic != null ? isPublic : false; // Garante que isPublic seja boolean
+        list.description = description != null ? description.trim() : (list.description || ''); // Mantém a descrição antiga se não fornecida
+        list.isPublic = isPublic != null ? isPublic : list.isPublic; // Mantém o status antigo se não fornecido
         list.updatedAt = Date.now();
         const updatedList = await list.save();
         res.status(200).json(updatedList);
@@ -398,7 +424,7 @@ app.put('/api/lists/:listId', protect, async (req, res) => {
     }
 });
 
-app.delete('/api/lists/:listId', protect, async (req, res) => {
+app.delete('/api/lists/:listId', protect, async (req, res) => { // Deleta uma lista
     try {
         const list = await UserList.findOneAndDelete({ _id: req.params.listId, userId: req.user._id });
         if (!list) return res.status(404).json({ message: 'Lista não encontrada ou não pertence a este usuário.' });
@@ -409,7 +435,7 @@ app.delete('/api/lists/:listId', protect, async (req, res) => {
     }
 });
 
-app.post('/api/lists/:listId/movies', protect, async (req, res) => {
+app.post('/api/lists/:listId/movies', protect, async (req, res) => { // Adiciona filme a uma lista
     const { tmdbId, title, posterPath } = req.body;
     if (!tmdbId || !title) return res.status(400).json({ message: 'ID do filme (tmdbId) e título são obrigatórios.' });
     try {
@@ -418,7 +444,7 @@ app.post('/api/lists/:listId/movies', protect, async (req, res) => {
         if (list.movies.find(movie => movie.tmdbId === tmdbId.toString())) {
             return res.status(400).json({ message: 'Este filme já está na lista.' });
         }
-        list.movies.push({ tmdbId: tmdbId.toString(), title, posterPath: posterPath || '' }); // Garante posterPath
+        list.movies.push({ tmdbId: tmdbId.toString(), title, posterPath: posterPath || '' });
         list.updatedAt = Date.now();
         await list.save();
         res.status(200).json(list);
@@ -428,7 +454,7 @@ app.post('/api/lists/:listId/movies', protect, async (req, res) => {
     }
 });
 
-app.delete('/api/lists/:listId/movies/:tmdbMovieId', protect, async (req, res) => {
+app.delete('/api/lists/:listId/movies/:tmdbMovieId', protect, async (req, res) => { // Remove filme de uma lista
     try {
         const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
         if (!list) return res.status(404).json({ message: 'Lista não encontrada.' });
@@ -445,8 +471,73 @@ app.delete('/api/lists/:listId/movies/:tmdbMovieId', protect, async (req, res) =
 });
 
 
+// --- ROTAS ESPECÍFICAS PARA WATCHLIST ---
+app.get('/api/watchlist', protect, async (req, res) => {
+    try {
+        const watchlist = await getOrCreateWatchlist(req.user._id);
+        res.status(200).json(watchlist);
+    } catch (error) {
+        console.error("Erro ao buscar watchlist:", error);
+        res.status(500).json({ message: "Erro ao buscar sua watchlist." });
+    }
+});
+
+app.post('/api/watchlist/movies', protect, async (req, res) => {
+    const { tmdbId, title, posterPath } = req.body;
+    if (!tmdbId || !title) {
+        return res.status(400).json({ message: 'ID do filme (tmdbId) e título são obrigatórios.' });
+    }
+    try {
+        const watchlist = await getOrCreateWatchlist(req.user._id);
+        if (watchlist.movies.find(movie => movie.tmdbId === tmdbId.toString())) {
+             return res.status(200).json({ message: 'Filme já está na sua watchlist.', list: watchlist });
+        }
+        watchlist.movies.push({ tmdbId: tmdbId.toString(), title, posterPath: posterPath || '' });
+        watchlist.updatedAt = Date.now();
+        await watchlist.save();
+        res.status(201).json({ message: 'Filme adicionado à sua watchlist.', list: watchlist });
+    } catch (error) {
+        console.error("Erro ao adicionar filme à watchlist:", error);
+        res.status(500).json({ message: 'Erro ao adicionar filme à sua watchlist.' });
+    }
+});
+
+app.delete('/api/watchlist/movies/:tmdbMovieId', protect, async (req, res) => {
+    const { tmdbMovieId } = req.params;
+    try {
+        const watchlist = await getOrCreateWatchlist(req.user._id);
+        const movieIndex = watchlist.movies.findIndex(movie => movie.tmdbId === tmdbMovieId.toString());
+        if (movieIndex === -1) {
+            return res.status(404).json({ message: 'Filme não encontrado na sua watchlist.' });
+        }
+        watchlist.movies.splice(movieIndex, 1);
+        watchlist.updatedAt = Date.now();
+        await watchlist.save();
+        res.status(200).json({ message: 'Filme removido da sua watchlist.', list: watchlist });
+    } catch (error) {
+        console.error("Erro ao remover filme da watchlist:", error);
+        res.status(500).json({ message: 'Erro ao remover filme da sua watchlist.' });
+    }
+});
+
+app.get('/api/watchlist/movies/:tmdbMovieId/status', protect, async (req, res) => {
+    const { tmdbMovieId } = req.params;
+    try {
+        const watchlist = await UserList.findOne({ userId: req.user._id, name: DEFAULT_WATCHLIST_NAME });
+        let isInWatchlist = false;
+        if (watchlist) {
+            isInWatchlist = watchlist.movies.some(movie => movie.tmdbId === tmdbMovieId.toString());
+        }
+        res.status(200).json({ isInWatchlist });
+    } catch (error) {
+        console.error("Erro ao verificar status do filme na watchlist:", error);
+        res.status(500).json({ message: 'Erro ao verificar status do filme na sua watchlist.' });
+    }
+});
+
+
 // --- INICIALIZAÇÃO DO SERVIDOR ---
 app.listen(PORT, () => {
     console.log(`Servidor backend rodando na porta ${PORT}`);
-    console.log(`Acesse em http://localhost:${PORT}.`);
+    console.log(`Acesse em http://localhost:${PORT} (se local) ou no seu URL do Render.`);
 });
