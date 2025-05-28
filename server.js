@@ -117,6 +117,66 @@ reviewSchema.index({ movieId: 1, userId: 1 }, { unique: true });
 
 const Review = mongoose.model('Review', reviewSchema);
 
+const movieItemSchema = new mongoose.Schema({
+    tmdbId: {
+        type: String,
+        required: true
+    },
+    title: {
+        type: String,
+        required: true
+    },
+    posterPath: {
+        type: String
+    },
+    addedAt: {
+        type: Date,
+        default: Date.now
+    }
+}, { _id: false });
+
+const userListSchema = new mongoose.Schema({
+    name: {
+        type: String,
+        required: [true, "O nome da lista é obrigatório."],
+        trim: true,
+        maxlength: [100, "O nome da lista não pode exceder 100 caracteres."]
+    },
+    userId: {
+        type: mongoose.Schema.Types.ObjectId,
+        required: true,
+        ref: 'User',
+        index: true
+    },
+    movies: [movieItemSchema],
+    isPublic: {
+        type: Boolean,
+        default: false
+    },
+    description: {
+        type: String,
+        trim: true,
+        maxlength: [500, "A descrição não pode exceder 500 caracteres."]
+    },
+    createdAt: {
+        type: Date,
+        default: Date.now
+    },
+    updatedAt: {
+        type: Date,
+        default: Date.now
+    }
+});
+
+userListSchema.pre('save', function(next) {
+    this.updatedAt = Date.now();
+    next();
+});
+
+userListSchema.index({ userId: 1, name: 1 }, { unique: true });
+
+const UserList = mongoose.model('UserList', userListSchema);
+
 const protect = async (req, res, next) => {
     let token;
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -307,7 +367,6 @@ app.post('/api/reviews/:movieId', protect, async (req, res) => {
 
     try {
         const existingReview = await Review.findOne({ movieId, userId });
-
         const reviewData = {
             rating,
             reviewText: reviewText != null ? reviewText : (existingReview ? existingReview.reviewText : ''),
@@ -367,6 +426,157 @@ app.get('/api/movies/:movieId/stats', async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ message: "Erro ao calcular a nota média." });
+    }
+});
+
+app.post('/api/lists', protect, async (req, res) => {
+    const { name, description, isPublic } = req.body;
+    const userId = req.user._id;
+
+    if (!name || typeof name !== 'string' || name.trim() === '') {
+        return res.status(400).json({ message: "O nome da lista é obrigatório." });
+    }
+
+    try {
+        const newList = new UserList({
+            name: name.trim(),
+            userId,
+            description: description || '',
+            isPublic: isPublic || false,
+            movies: [] 
+        });
+        const savedList = await newList.save();
+        res.status(201).json(savedList);
+    } catch (error) {
+        if (error.code === 11000) {
+            return res.status(400).json({ message: `Você já possui uma lista com o nome "${name.trim()}".` });
+        }
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({ message: messages.join(', ') });
+        }
+        res.status(500).json({ message: "Erro ao criar a lista." });
+    }
+});
+
+app.get('/api/lists', protect, async (req, res) => {
+    try {
+        const lists = await UserList.find({ userId: req.user._id }).sort({ updatedAt: -1 });
+        res.status(200).json(lists);
+    } catch (error) {
+        res.status(500).json({ message: "Erro ao buscar as listas." });
+    }
+});
+
+app.get('/api/lists/:listId', protect, async (req, res) => {
+    try {
+        const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
+        if (!list) {
+            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
+        }
+        res.status(200).json(list);
+    } catch (error) {
+        if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: "ID da lista inválido." });
+        }
+        res.status(500).json({ message: "Erro ao buscar a lista." });
+    }
+});
+
+app.put('/api/lists/:listId', protect, async (req, res) => {
+    const { name, description, isPublic } = req.body;
+    if (name && (typeof name !== 'string' || name.trim() === '')) {
+        return res.status(400).json({ message: "O nome da lista não pode ser vazio se fornecido."});
+    }
+    try {
+        const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
+        if (!list) {
+            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
+        }
+
+        if (name) list.name = name.trim();
+        if (description != null) list.description = description;
+        if (isPublic != null) list.isPublic = isPublic;
+        
+        const updatedList = await list.save();
+        res.status(200).json(updatedList);
+    } catch (error) {
+        if (error.code === 11000) {
+             return res.status(400).json({ message: `Você já possui uma lista com o nome "${name.trim()}".` });
+        }
+        if (error.name === 'ValidationError') {
+            const messages = Object.values(error.errors).map(val => val.message);
+            return res.status(400).json({ message: messages.join(', ') });
+        }
+        res.status(500).json({ message: "Erro ao atualizar a lista." });
+    }
+});
+
+app.delete('/api/lists/:listId', protect, async (req, res) => {
+    try {
+        const list = await UserList.findOneAndDelete({ _id: req.params.listId, userId: req.user._id });
+        if (!list) {
+            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
+        }
+        res.status(200).json({ message: "Lista deletada com sucesso." });
+    } catch (error) {
+        if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: "ID da lista inválido." });
+        }
+        res.status(500).json({ message: "Erro ao deletar a lista." });
+    }
+});
+
+app.post('/api/lists/:listId/movies', protect, async (req, res) => {
+    const { tmdbId, title, posterPath } = req.body;
+
+    if (!tmdbId || !title) {
+        return res.status(400).json({ message: "tmdbId e title do filme são obrigatórios." });
+    }
+
+    try {
+        const list = await UserList.findOne({ _id: req.params.listId, userId: req.user._id });
+        if (!list) {
+            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
+        }
+
+        const movieExists = list.movies.find(movie => movie.tmdbId.toString() === tmdbId.toString());
+        if (movieExists) {
+            return res.status(400).json({ message: "Este filme já está na lista." });
+        }
+
+        list.movies.push({ tmdbId, title, posterPath: posterPath || null });
+        const updatedList = await list.save();
+        res.status(200).json(updatedList);
+    } catch (error) {
+        if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: "ID da lista inválido." });
+        }
+        res.status(500).json({ message: "Erro ao adicionar filme à lista." });
+    }
+});
+
+app.delete('/api/lists/:listId/movies/:tmdbId', protect, async (req, res) => {
+    const { listId, tmdbId } = req.params;
+    try {
+        const list = await UserList.findOne({ _id: listId, userId: req.user._id });
+        if (!list) {
+            return res.status(404).json({ message: "Lista não encontrada ou não pertence a este usuário." });
+        }
+
+        const movieIndex = list.movies.findIndex(movie => movie.tmdbId.toString() === tmdbId.toString());
+        if (movieIndex === -1) {
+            return res.status(404).json({ message: "Filme não encontrado nesta lista." });
+        }
+
+        list.movies.splice(movieIndex, 1);
+        const updatedList = await list.save();
+        res.status(200).json(updatedList);
+    } catch (error) {
+         if (error.kind === 'ObjectId') {
+            return res.status(400).json({ message: "ID da lista ou do filme inválido." });
+        }
+        res.status(500).json({ message: "Erro ao remover filme da lista." });
     }
 });
 
